@@ -708,7 +708,7 @@ export class MatrixClient {
       await this.resolveRoomKeyBackupTrustState(crypto, serverVersionFallback);
     let keyLoadAttempted = false;
     let keyLoadError: string | null = null;
-    if (serverVersion && decryptionKeyCached === false) {
+    if (serverVersion && (decryptionKeyCached === false || matchesDecryptionKey === false)) {
       if (
         typeof crypto.loadSessionBackupPrivateKeyFromSecretStorage ===
         "function" /* pragma: allowlist secret */
@@ -716,6 +716,7 @@ export class MatrixClient {
         keyLoadAttempted = true;
         try {
           await crypto.loadSessionBackupPrivateKeyFromSecretStorage(); // pragma: allowlist secret
+          await this.enableTrustedRoomKeyBackupIfPossible(crypto);
         } catch (err) {
           keyLoadError = err instanceof Error ? err.message : String(err);
         }

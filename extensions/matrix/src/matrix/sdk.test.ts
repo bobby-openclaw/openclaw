@@ -1203,6 +1203,51 @@ describe("MatrixClient crypto bootstrapping", () => {
     expect(loadSessionBackupPrivateKeyFromSecretStorage).toHaveBeenCalledTimes(1);
   });
 
+  it("reloads backup keys from secret storage when the cached key mismatches the active backup", async () => {
+    const loadSessionBackupPrivateKeyFromSecretStorage = vi.fn(async () => {});
+    const checkKeyBackupAndEnable = vi.fn(async () => {});
+    const isKeyBackupTrusted = vi
+      .fn()
+      .mockResolvedValueOnce({
+        trusted: true,
+        matchesDecryptionKey: false,
+      })
+      .mockResolvedValueOnce({
+        trusted: true,
+        matchesDecryptionKey: true,
+      });
+    matrixJsClient.getCrypto = vi.fn(() => ({
+      on: vi.fn(),
+      getActiveSessionBackupVersion: vi.fn(async () => "49262"),
+      getSessionBackupPrivateKey: vi.fn(async () => new Uint8Array([1])),
+      loadSessionBackupPrivateKeyFromSecretStorage,
+      checkKeyBackupAndEnable,
+      getKeyBackupInfo: vi.fn(async () => ({
+        algorithm: "m.megolm_backup.v1.curve25519-aes-sha2",
+        auth_data: {},
+        version: "49262",
+      })),
+      isKeyBackupTrusted,
+    }));
+
+    const client = new MatrixClient("https://matrix.example.org", "token", undefined, undefined, {
+      encryption: true,
+    });
+
+    const backup = await client.getRoomKeyBackupStatus();
+    expect(backup).toMatchObject({
+      serverVersion: "49262",
+      activeVersion: "49262",
+      trusted: true,
+      matchesDecryptionKey: true,
+      decryptionKeyCached: true,
+      keyLoadAttempted: true,
+      keyLoadError: null,
+    });
+    expect(loadSessionBackupPrivateKeyFromSecretStorage).toHaveBeenCalledTimes(1);
+    expect(checkKeyBackupAndEnable).toHaveBeenCalledTimes(1);
+  });
+
   it("reports why backup key loading failed during status checks", async () => {
     const loadSessionBackupPrivateKeyFromSecretStorage = vi.fn(async () => {
       throw new Error("secret storage key is not available");
@@ -1385,6 +1430,57 @@ describe("MatrixClient crypto bootstrapping", () => {
       expect.objectContaining({ setupNewKeyBackup: true }),
     );
     expect(checkKeyBackupAndEnable).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads the new backup decryption key after reset when the old cached key mismatches", async () => {
+    const checkKeyBackupAndEnable = vi.fn(async () => {});
+    const bootstrapSecretStorage = vi.fn(async () => {});
+    const loadSessionBackupPrivateKeyFromSecretStorage = vi.fn(async () => {});
+    const isKeyBackupTrusted = vi
+      .fn()
+      .mockResolvedValueOnce({
+        trusted: true,
+        matchesDecryptionKey: false,
+      })
+      .mockResolvedValueOnce({
+        trusted: true,
+        matchesDecryptionKey: true,
+      });
+    matrixJsClient.getCrypto = vi.fn(() => ({
+      on: vi.fn(),
+      bootstrapSecretStorage,
+      checkKeyBackupAndEnable,
+      loadSessionBackupPrivateKeyFromSecretStorage,
+      getActiveSessionBackupVersion: vi.fn(async () => "49262"),
+      getSessionBackupPrivateKey: vi.fn(async () => new Uint8Array([1])),
+      getKeyBackupInfo: vi.fn(async () => ({
+        algorithm: "m.megolm_backup.v1.curve25519-aes-sha2",
+        auth_data: {},
+        version: "49262",
+      })),
+      isKeyBackupTrusted,
+    }));
+
+    const client = new MatrixClient("https://matrix.example.org", "token", undefined, undefined, {
+      encryption: true,
+    });
+    vi.spyOn(client, "doRequest").mockImplementation(async (method, endpoint) => {
+      if (method === "GET" && String(endpoint).includes("/room_keys/version")) {
+        return { version: "22245" };
+      }
+      if (method === "DELETE" && String(endpoint).includes("/room_keys/version/22245")) {
+        return {};
+      }
+      return {};
+    });
+
+    const result = await client.resetRoomKeyBackup();
+
+    expect(result.success).toBe(true);
+    expect(result.createdVersion).toBe("49262");
+    expect(result.backup.matchesDecryptionKey).toBe(true);
+    expect(loadSessionBackupPrivateKeyFromSecretStorage).toHaveBeenCalledTimes(1);
+    expect(checkKeyBackupAndEnable).toHaveBeenCalledTimes(2);
   });
 
   it("fails reset when the recreated backup still does not match the local decryption key", async () => {
